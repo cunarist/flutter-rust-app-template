@@ -60,14 +60,6 @@ void startRustLogicExtern() {
   rustFunction();
 }
 
-void stopRustLogicExtern() {
-  final rustFunction =
-      rustLibrary.lookupFunction<Void Function(), void Function()>(
-    'stop_rust_logic_extern',
-  );
-  rustFunction();
-}
-
 /// Sends bytes to Rust.
 Future<void> sendDartSignalExtern(
   int messageId,

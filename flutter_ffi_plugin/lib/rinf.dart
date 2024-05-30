@@ -17,16 +17,6 @@ void startRustLogic() async {
   startRustLogicExtern();
 }
 
-/// Terminates all Rust tasks.
-/// Doing so before closing the Flutter app
-/// can prevent potential memory errors that may occur
-/// when Rust attempts to send data after the Dart VM has been turned off.
-/// Please note that on the web, this function does not have any effect,
-/// as tasks are managed by the JavaScript runtime, not Rust.
-void stopRustLogic() async {
-  stopRustLogicExtern();
-}
-
 /// Sends a signal to Rust.
 void sendDartSignal(
   int messageId,

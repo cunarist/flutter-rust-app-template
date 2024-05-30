@@ -7,20 +7,60 @@
 /// at the root of the `hub` crate.
 macro_rules! write_interface {
     () => {
+        use crate::tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+        use rinf::externs::os_thread_local::ThreadLocal;
+        use rinf::SharedCell;
+        use std::cell::RefCell;
+        use std::sync::mpsc::Receiver;
+        use std::sync::{Arc, Mutex, OnceLock};
+
+        struct ShutdownNotifier {
+            shutdown_sender: UnboundedSender<()>,
+            done_receiver: Receiver<()>,
+        }
+
+        #[cfg(not(target_family = "wasm"))]
+        impl Drop for ShutdownNotifier {
+            fn drop(&mut self) {
+                let _ = self.shutdown_sender.send(());
+                let _ = self.done_receiver.recv();
+                interface_os::TOKIO_RUNTIME.with(|cell| {
+                    cell.take();
+                });
+            }
+        }
+
+        // We use `os_thread_local` so that when the program fails
+        // and the main thread exits unexpectedly,
+        // the sender can be dropped and send the error signal accordingly.
+        type NotifierType = OnceLock<ThreadLocal<RefCell<Option<ShutdownNotifier>>>>;
+        static SHUTDOWN_NOTIFIER: NotifierType = OnceLock::new();
+
+        static SHUTDOWN_RECEIVER: SharedCell<UnboundedReceiver<()>> = OnceLock::new();
+
+        async fn dart_shutdown() {
+            let mut receiver = SHUTDOWN_RECEIVER
+                .get_or_init(|| Mutex::new(RefCell::new(None)))
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap();
+            receiver.recv().await;
+        }
+
         #[cfg(not(target_family = "wasm"))]
         mod interface_os {
             use crate::tokio::runtime::Builder;
             use crate::tokio::runtime::Runtime;
+            use crate::tokio::sync::mpsc::unbounded_channel;
             use rinf::externs::os_thread_local::ThreadLocal;
             use std::cell::RefCell;
             use std::panic::catch_unwind;
-            use std::sync::OnceLock;
-
-            // We use `os_thread_local` so that when the program fails
-            // and the main thread exits unexpectedly,
-            // the whole async tokio runtime can disappear as well.
-            type TokioRuntime = OnceLock<ThreadLocal<RefCell<Option<Runtime>>>>;
-            static TOKIO_RUNTIME: TokioRuntime = OnceLock::new();
+            use std::sync::mpsc::channel as std_channel;
+            use std::sync::{Arc, Mutex};
+            thread_local! {
+                pub static TOKIO_RUNTIME: RefCell<Option<Runtime>> = RefCell::new(None);
+            }
 
             #[no_mangle]
             pub extern "C" fn start_rust_logic_extern() {
@@ -36,29 +76,35 @@ macro_rules! write_interface {
                         }));
                     }
 
+                    // Prepare to notify Dart shutdown.
+                    let (shutdown_sender, shutdown_receiver) = unbounded_channel();
+                    let (done_sender, done_receiver) = std_channel::<()>();
+                    let os_cell = crate::SHUTDOWN_NOTIFIER
+                        .get_or_init(|| ThreadLocal::new(|| RefCell::new(None)));
+                    os_cell.with(move |cell| {
+                        cell.replace(Some(crate::ShutdownNotifier {
+                            shutdown_sender,
+                            done_receiver,
+                        }));
+                    });
+                    let mut receiver = crate::SHUTDOWN_RECEIVER
+                        .get_or_init(|| Mutex::new(RefCell::new(None)))
+                        .lock()
+                        .unwrap()
+                        .replace(Some(shutdown_receiver));
+
                     // Run the main function.
                     let tokio_runtime = Builder::new_multi_thread().enable_all().build().unwrap();
-                    tokio_runtime.spawn(crate::main());
-                    let os_cell =
-                        TOKIO_RUNTIME.get_or_init(|| ThreadLocal::new(|| RefCell::new(None)));
-                    os_cell.with(move |cell| {
+                    tokio_runtime.spawn(async move {
+                        crate::main().await;
+                        let _ = done_sender.send(());
+                    });
+                    TOKIO_RUNTIME.with(move |cell| {
                         // If there was already a tokio runtime previously,
                         // most likely due to Dart's hot restart,
                         // its tasks as well as itself will be terminated,
                         // being replaced with the new one.
                         cell.replace(Some(tokio_runtime));
-                    });
-                });
-            }
-
-            #[no_mangle]
-            pub extern "C" fn stop_rust_logic_extern() {
-                let _ = catch_unwind(|| {
-                    let os_cell =
-                        TOKIO_RUNTIME.get_or_init(|| ThreadLocal::new(|| RefCell::new(None)));
-                    os_cell.with(move |cell| {
-                        // Dropping the tokio runtime causes it to shut down.
-                        cell.take();
                     });
                 });
             }

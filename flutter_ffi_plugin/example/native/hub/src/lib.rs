@@ -4,6 +4,8 @@
 mod messages;
 mod sample_functions;
 
+use std::time::Duration;
+
 // use tokio;
 use tokio_with_wasm::tokio; // Uncomment this line to target the web
 
@@ -18,4 +20,9 @@ async fn main() {
     tokio::spawn(sample_functions::tell_numbers());
     tokio::spawn(sample_functions::stream_fractal());
     tokio::spawn(sample_functions::run_debug_tests());
+    dart_shutdown().await;
+    for i in 0..30 {
+        println!("{i}");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
 }

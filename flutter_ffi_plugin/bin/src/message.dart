@@ -509,11 +509,6 @@ Future<void> initializeRust() async {
   startRustLogic();
 }
 
-Future<void> finalizeRust() async {
-  stopRustLogic();
-  await Future.delayed(const Duration(milliseconds: 10));
-}
-
 final signalHandlers = <int, void Function(Uint8List, Uint8List)>{
 ''';
   for (final entry in markedMessagesAll.entries) {
